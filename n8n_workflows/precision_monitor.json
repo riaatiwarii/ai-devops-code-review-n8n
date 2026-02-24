@@ -1,0 +1,106 @@
+{
+  "name": "AI Code Review - Precision Monitor (Cron)",
+  "nodes": [
+    {
+      "id": "cron_trigger",
+      "name": "Daily Cron",
+      "type": "n8n-nodes-base.cron",
+      "position": [250, 300],
+      "parameters": {
+        "triggerTimes": {
+          "item": [{ "mode": "everyDay", "hour": 8, "minute": 0 }]
+        }
+      }
+    },
+    {
+      "id": "fetch_metrics",
+      "name": "Fetch Precision Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [450, 300],
+      "parameters": {
+        "url": "={{ $env.REVIEW_API_URL }}/metrics",
+        "method": "GET"
+      }
+    },
+    {
+      "id": "parse_metrics",
+      "name": "Parse Metrics",
+      "type": "n8n-nodes-base.code",
+      "position": [650, 300],
+      "parameters": {
+        "jsCode": "const raw = $json.data;\nconst metrics = {};\nraw.split('\\n').forEach(line => {\n  const [key, val] = line.trim().split(' ');\n  if (key && val) metrics[key] = parseFloat(val);\n});\nreturn [{ json: metrics }];"
+      }
+    },
+    {
+      "id": "check_precision",
+      "name": "Precision Below Threshold?",
+      "type": "n8n-nodes-base.if",
+      "position": [850, 300],
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json['code_review_false_positive_ratio'] || 0 }}",
+              "operation": "larger",
+              "value2": 0.4
+            }
+          ]
+        }
+      },
+      "notes": "Disable auto-commenting if false positive rate exceeds 40%"
+    },
+    {
+      "id": "auto_disable",
+      "name": "Disable Auto-Comment",
+      "type": "n8n-nodes-base.postgres",
+      "position": [1050, 200],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE system_config SET value = 'false' WHERE key = 'auto_comment_enabled'"
+      },
+      "credentials": {
+        "postgres": { "name": "Postgres Reviews DB" }
+      }
+    },
+    {
+      "id": "alert_team",
+      "name": "Alert Team - Model Degraded",
+      "type": "n8n-nodes-base.slack",
+      "position": [1250, 200],
+      "parameters": {
+        "channel": "={{ $env.SLACK_ALERTS_CHANNEL }}",
+        "text": "⚠️ *AI Code Review Model Alert*\nFalse positive rate exceeded threshold (>40%).\nAuto-commenting has been *disabled*.\nPlease retrain the model or review dataset quality.\n\nMetrics: {{ JSON.stringify($('Parse Metrics').item.json, null, 2) }}"
+      }
+    },
+    {
+      "id": "daily_report",
+      "name": "Send Daily Report",
+      "type": "n8n-nodes-base.slack",
+      "position": [1050, 400],
+      "parameters": {
+        "channel": "={{ $env.SLACK_REVIEW_CHANNEL }}",
+        "text": "📊 *Daily Code Review Stats*\n• Total reviews: {{ $('Parse Metrics').item.json['code_review_total'] }}\n• High severity: {{ $('Parse Metrics').item.json['code_review_high_severity_total'] }}\n• Avg latency: {{ $('Parse Metrics').item.json['code_review_avg_latency_ms'] }}ms\n• Auto-cleared: {{ ($('Parse Metrics').item.json['code_review_auto_cleared_ratio'] * 100).toFixed(1) }}%\n• Escalated: {{ ($('Parse Metrics').item.json['code_review_escalated_ratio'] * 100).toFixed(1) }}%"
+      }
+    }
+  ],
+  "connections": {
+    "Daily Cron": {
+      "main": [[{ "node": "Fetch Precision Metrics", "type": "main", "index": 0 }]]
+    },
+    "Fetch Precision Metrics": {
+      "main": [[{ "node": "Parse Metrics", "type": "main", "index": 0 }]]
+    },
+    "Parse Metrics": {
+      "main": [[{ "node": "Precision Below Threshold?", "type": "main", "index": 0 }]]
+    },
+    "Precision Below Threshold?": {
+      "main": [
+        [{ "node": "Disable Auto-Comment", "type": "main", "index": 0 }],
+        [{ "node": "Send Daily Report", "type": "main", "index": 0 }]
+      ]
+    },
+    "Disable Auto-Comment": {
+      "main": [[{ "node": "Alert Team - Model Degraded", "type": "main", "index": 0 }]]
+    }
+  }
+}

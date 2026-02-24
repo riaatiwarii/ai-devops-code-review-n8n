@@ -1,0 +1,226 @@
+{
+  "name": "AI Code Review - Full Pipeline",
+  "nodes": [
+    {
+      "id": "1",
+      "name": "GitHub PR Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "github-pr-webhook",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "2",
+      "name": "Filter PR Actions",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [500, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "id": "c1", "leftValue": "={{ $json.body.action }}", "rightValue": "opened", "operator": { "type": "string", "operation": "equals" } },
+            { "id": "c2", "leftValue": "={{ $json.body.action }}", "rightValue": "synchronize", "operator": { "type": "string", "operation": "equals" } },
+            { "id": "c3", "leftValue": "={{ $json.body.action }}", "rightValue": "reopened", "operator": { "type": "string", "operation": "equals" } }
+          ],
+          "combinator": "or"
+        }
+      }
+    },
+    {
+      "id": "3",
+      "name": "Extract PR Metadata",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [750, 300],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            { "id": "f1", "name": "repo", "value": "={{ $json.body.repository.full_name }}", "type": "string" },
+            { "id": "f2", "name": "pr_number", "value": "={{ $json.body.pull_request.number }}", "type": "number" },
+            { "id": "f3", "name": "pr_title", "value": "={{ $json.body.pull_request.title }}", "type": "string" },
+            { "id": "f4", "name": "author", "value": "={{ $json.body.pull_request.user.login }}", "type": "string" },
+            { "id": "f5", "name": "pr_url", "value": "={{ $json.body.pull_request.html_url }}", "type": "string" },
+            { "id": "f6", "name": "head_sha", "value": "={{ $json.body.pull_request.head.sha }}", "type": "string" },
+            { "id": "f7", "name": "base_branch", "value": "={{ $json.body.pull_request.base.ref }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "4",
+      "name": "Fetch PR Diff",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1000, 200],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $json.repo }}/pulls/{{ $json.pr_number }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Accept", "value": "application/vnd.github.v3.diff" }]
+        },
+        "options": {}
+      },
+      "credentials": { "httpHeaderAuth": { "id": "github-cred", "name": "GitHub Token" } }
+    },
+    {
+      "id": "5",
+      "name": "Fetch Changed Files",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1000, 400],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/{{ $('Extract PR Metadata').item.json.repo }}/pulls/{{ $('Extract PR Metadata').item.json.pr_number }}/files",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "credentials": { "httpHeaderAuth": { "id": "github-cred", "name": "GitHub Token" } }
+    },
+    {
+      "id": "6",
+      "name": "Prepare Model Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300],
+      "parameters": {
+        "jsCode": "const prMeta = $('Extract PR Metadata').item.json;\nconst diffResponse = $('Fetch PR Diff').item.json;\nconst filesData = $('Fetch Changed Files').item.json;\nconst diff = typeof diffResponse === 'string' ? diffResponse : JSON.stringify(diffResponse);\nconst extMap = {'.py':'python','.js':'javascript','.ts':'typescript','.go':'go','.java':'java','.rs':'rust','.rb':'ruby','.php':'php','.cs':'csharp'};\nconst files = (Array.isArray(filesData) ? filesData : []).map(f => f.filename || '');\nconst langCounts = {};\nfiles.forEach(f => { const parts = f.split('.'); if (parts.length > 1) { const ext = '.' + parts.pop(); const lang = extMap[ext] || 'unknown'; langCounts[lang] = (langCounts[lang] || 0) + 1; } });\nconst language = Object.entries(langCounts).sort((a,b) => b[1]-a[1])[0]?.[0] || 'unknown';\nconst lines = diff.split('\\n');\nconst added = lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length;\nconst removed = lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length;\nreturn [{ json: { repo: prMeta.repo, pr_number: prMeta.pr_number, pr_title: prMeta.pr_title, author: prMeta.author, pr_url: prMeta.pr_url, head_sha: prMeta.head_sha, diff: diff.slice(0, 6000), language, files, lines_added: added, lines_removed: removed } }];"
+      }
+    },
+    {
+      "id": "7",
+      "name": "Call Review API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1500, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://review-api:8000/review",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 120000 }
+      }
+    },
+    {
+      "id": "8",
+      "name": "Has Issues?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1750, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [{ "id": "c1", "leftValue": "={{ $json.issues.length }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "9",
+      "name": "Format PR Comment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 200],
+      "parameters": {
+        "jsCode": "const review = $('Call Review API').item.json;\nconst pr = $('Prepare Model Payload').item.json;\nconst severityEmoji = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };\nconst typeEmoji = { security: '🔒', bug: '🐛', performance: '⚡', style: '🎨', maintainability: '🔧' };\nlet body = `## 🤖 Automated Code Review\\n\\n`;\nbody += `**Overall Score:** ${(review.overall_score || 0).toFixed(1)}/10\\n\\n`;\nif (review.summary) { body += `**Summary:** ${review.summary}\\n\\n`; }\nif (review.issues && review.issues.length > 0) {\n  body += `### Issues Found (${review.issues.length})\\n\\n`;\n  review.issues.forEach(issue => {\n    const sev = severityEmoji[issue.severity] || '⚪';\n    const typ = typeEmoji[issue.type] || '📌';\n    body += `#### ${sev} ${typ} ${(issue.type||'').toUpperCase()} — \\`${issue.file}:${issue.line}\\`\\n`;\n    body += `**Severity:** ${issue.severity}\\n\\n${issue.description}\\n\\n`;\n    if (issue.suggested_fix) { body += `> 💡 **Suggestion:** ${issue.suggested_fix}\\n\\n`; }\n    body += `---\\n\\n`;\n  });\n}\nbody += `_Review latency: ${review.latency_ms || 0}ms_`;\nreturn [{ json: { comment_body: body, issues: review.issues || [], pr, review } }];"
+      }
+    },
+    {
+      "id": "10",
+      "name": "Post GitHub Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2250, 150],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $json.pr.repo }}/issues/{{ $json.pr.pr_number }}/comments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ body: $json.comment_body }) }}",
+        "options": {}
+      },
+      "credentials": { "httpHeaderAuth": { "id": "github-cred", "name": "GitHub Token" } }
+    },
+    {
+      "id": "11",
+      "name": "Is High Severity?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2250, 350],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [{ "id": "c1", "leftValue": "={{ $json.issues.some(i => i.severity === 'high' || i.severity === 'critical') }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "12",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2500, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: '#code-reviews', text: '🚨 Critical issue in PR #' + $json.pr.pr_number + ' — ' + $json.pr.repo + '\\n' + $json.pr.pr_url }) }}",
+        "options": {}
+      },
+      "credentials": { "httpHeaderAuth": { "id": "slack-cred", "name": "Slack Token" } }
+    },
+    {
+      "id": "13",
+      "name": "Post Passed Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2000, 450],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $('Prepare Model Payload').item.json.repo }}/issues/{{ $('Prepare Model Payload').item.json.pr_number }}/comments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"body\": \"✅ **Automated review passed.** Score: \" + ($('Call Review API').item.json.overall_score || 0).toFixed(1) + \"/10 — no issues detected.\" }",
+        "options": {}
+      },
+      "credentials": { "httpHeaderAuth": { "id": "github-cred", "name": "GitHub Token" } }
+    }
+  ],
+  "connections": {
+    "GitHub PR Webhook": { "main": [[{ "node": "Filter PR Actions", "type": "main", "index": 0 }]] },
+    "Filter PR Actions": { "main": [[{ "node": "Extract PR Metadata", "type": "main", "index": 0 }], []] },
+    "Extract PR Metadata": { "main": [[{ "node": "Fetch PR Diff", "type": "main", "index": 0 }, { "node": "Fetch Changed Files", "type": "main", "index": 0 }]] },
+    "Fetch PR Diff": { "main": [[{ "node": "Prepare Model Payload", "type": "main", "index": 0 }]] },
+    "Fetch Changed Files": { "main": [[{ "node": "Prepare Model Payload", "type": "main", "index": 0 }]] },
+    "Prepare Model Payload": { "main": [[{ "node": "Call Review API", "type": "main", "index": 0 }]] },
+    "Call Review API": { "main": [[{ "node": "Has Issues?", "type": "main", "index": 0 }]] },
+    "Has Issues?": { "main": [[{ "node": "Format PR Comment", "type": "main", "index": 0 }], [{ "node": "Post Passed Comment", "type": "main", "index": 0 }]] },
+    "Format PR Comment": { "main": [[{ "node": "Post GitHub Comment", "type": "main", "index": 0 }, { "node": "Is High Severity?", "type": "main", "index": 0 }]] },
+    "Is High Severity?": { "main": [[{ "node": "Send Slack Alert", "type": "main", "index": 0 }], []] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "meta": { "templateCredsSetupCompleted": true },
+  "pinData": {}
+}

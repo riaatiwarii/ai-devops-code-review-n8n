@@ -22,7 +22,7 @@
       "position": [500, 300],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
           "conditions": [
             { "id": "c1", "leftValue": "={{ $json.body.action }}", "rightValue": "opened", "operator": { "type": "string", "operation": "equals" } },
             { "id": "c2", "leftValue": "={{ $json.body.action }}", "rightValue": "synchronize", "operator": { "type": "string", "operation": "equals" } },
@@ -35,24 +35,11 @@
     {
       "id": "3",
       "name": "Extract PR Metadata",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [750, 300],
       "parameters": {
-        "mode": "manual",
-        "duplicateItem": false,
-        "assignments": {
-          "assignments": [
-            { "id": "f1", "name": "repo", "value": "={{ $json.body.repository.full_name }}", "type": "string" },
-            { "id": "f2", "name": "pr_number", "value": "={{ $json.body.pull_request.number }}", "type": "number" },
-            { "id": "f3", "name": "pr_title", "value": "={{ $json.body.pull_request.title }}", "type": "string" },
-            { "id": "f4", "name": "author", "value": "={{ $json.body.pull_request.user.login }}", "type": "string" },
-            { "id": "f5", "name": "pr_url", "value": "={{ $json.body.pull_request.html_url }}", "type": "string" },
-            { "id": "f6", "name": "head_sha", "value": "={{ $json.body.pull_request.head.sha }}", "type": "string" },
-            { "id": "f7", "name": "base_branch", "value": "={{ $json.body.pull_request.base.ref }}", "type": "string" }
-          ]
-        },
-        "options": {}
+        "jsCode": "const body = $json.body || $json;\nconst pr = body.pull_request || {};\nconst repo = body.repository || {};\n\nreturn [{\n  json: {\n    repo: repo.full_name || '',\n    pr_number: pr.number || 0,\n    pr_title: pr.title || '',\n    author: (pr.user || {}).login || '',\n    pr_url: pr.html_url || '',\n    head_sha: (pr.head || {}).sha || '',\n    base_branch: (pr.base || {}).ref || 'main'\n  }\n}];"
       }
     },
     {
@@ -79,7 +66,7 @@
       "name": "Fetch Changed Files",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
-      "position": [1000, 400],
+      "position": [1000, 420],
       "parameters": {
         "method": "GET",
         "url": "=https://api.github.com/repos/{{ $('Extract PR Metadata').item.json.repo }}/pulls/{{ $('Extract PR Metadata').item.json.pr_number }}/files",
@@ -96,7 +83,7 @@
       "typeVersion": 2,
       "position": [1250, 300],
       "parameters": {
-        "jsCode": "const prMeta = $('Extract PR Metadata').item.json;\nconst diffResponse = $('Fetch PR Diff').item.json;\nconst filesData = $('Fetch Changed Files').item.json;\nconst diff = typeof diffResponse === 'string' ? diffResponse : JSON.stringify(diffResponse);\nconst extMap = {'.py':'python','.js':'javascript','.ts':'typescript','.go':'go','.java':'java','.rs':'rust','.rb':'ruby','.php':'php','.cs':'csharp'};\nconst files = (Array.isArray(filesData) ? filesData : []).map(f => f.filename || '');\nconst langCounts = {};\nfiles.forEach(f => { const parts = f.split('.'); if (parts.length > 1) { const ext = '.' + parts.pop(); const lang = extMap[ext] || 'unknown'; langCounts[lang] = (langCounts[lang] || 0) + 1; } });\nconst language = Object.entries(langCounts).sort((a,b) => b[1]-a[1])[0]?.[0] || 'unknown';\nconst lines = diff.split('\\n');\nconst added = lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length;\nconst removed = lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length;\nreturn [{ json: { repo: prMeta.repo, pr_number: prMeta.pr_number, pr_title: prMeta.pr_title, author: prMeta.author, pr_url: prMeta.pr_url, head_sha: prMeta.head_sha, diff: diff.slice(0, 6000), language, files, lines_added: added, lines_removed: removed } }];"
+        "jsCode": "const prMeta = $('Extract PR Metadata').item.json;\nconst diffResponse = $('Fetch PR Diff').item.json;\nconst filesData = $('Fetch Changed Files').item.json;\n\nconst diff = typeof diffResponse === 'string' ? diffResponse : JSON.stringify(diffResponse);\n\nconst extMap = {'.py':'python','.js':'javascript','.ts':'typescript','.go':'go','.java':'java','.rs':'rust','.rb':'ruby','.php':'php','.cs':'csharp'};\nconst files = (Array.isArray(filesData) ? filesData : []).map(f => f.filename || '');\nconst langCounts = {};\nfiles.forEach(f => {\n  const parts = f.split('.');\n  if (parts.length > 1) {\n    const ext = '.' + parts.pop();\n    const lang = extMap[ext] || 'unknown';\n    langCounts[lang] = (langCounts[lang] || 0) + 1;\n  }\n});\nconst language = Object.entries(langCounts).sort((a,b) => b[1]-a[1])[0]?.[0] || 'unknown';\nconst lines = diff.split('\\n');\nconst added = lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length;\nconst removed = lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length;\n\nreturn [{\n  json: {\n    repo: prMeta.repo,\n    pr_number: prMeta.pr_number,\n    pr_title: prMeta.pr_title,\n    author: prMeta.author,\n    pr_url: prMeta.pr_url,\n    head_sha: prMeta.head_sha,\n    diff: diff.slice(0, 6000),\n    language,\n    files,\n    lines_added: added,\n    lines_removed: removed\n  }\n}];"
       }
     },
     {
@@ -135,7 +122,7 @@
       "typeVersion": 2,
       "position": [2000, 200],
       "parameters": {
-        "jsCode": "const review = $('Call Review API').item.json;\nconst pr = $('Prepare Model Payload').item.json;\nconst severityEmoji = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };\nconst typeEmoji = { security: '🔒', bug: '🐛', performance: '⚡', style: '🎨', maintainability: '🔧' };\nlet body = `## 🤖 Automated Code Review\\n\\n`;\nbody += `**Overall Score:** ${(review.overall_score || 0).toFixed(1)}/10\\n\\n`;\nif (review.summary) { body += `**Summary:** ${review.summary}\\n\\n`; }\nif (review.issues && review.issues.length > 0) {\n  body += `### Issues Found (${review.issues.length})\\n\\n`;\n  review.issues.forEach(issue => {\n    const sev = severityEmoji[issue.severity] || '⚪';\n    const typ = typeEmoji[issue.type] || '📌';\n    body += `#### ${sev} ${typ} ${(issue.type||'').toUpperCase()} — \\`${issue.file}:${issue.line}\\`\\n`;\n    body += `**Severity:** ${issue.severity}\\n\\n${issue.description}\\n\\n`;\n    if (issue.suggested_fix) { body += `> 💡 **Suggestion:** ${issue.suggested_fix}\\n\\n`; }\n    body += `---\\n\\n`;\n  });\n}\nbody += `_Review latency: ${review.latency_ms || 0}ms_`;\nreturn [{ json: { comment_body: body, issues: review.issues || [], pr, review } }];"
+        "jsCode": "const review = $('Call Review API').item.json;\nconst pr = $('Prepare Model Payload').item.json;\nconst severityEmoji = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };\nconst typeEmoji = { security: '🔒', bug: '🐛', performance: '⚡', style: '🎨', maintainability: '🔧' };\nlet body = '## 🤖 Automated Code Review\\n\\n';\nbody += '**Overall Score:** ' + (review.overall_score || 0).toFixed(1) + '/10\\n\\n';\nif (review.summary) { body += '**Summary:** ' + review.summary + '\\n\\n'; }\nif (review.issues && review.issues.length > 0) {\n  body += '### Issues Found (' + review.issues.length + ')\\n\\n';\n  review.issues.forEach(issue => {\n    const sev = severityEmoji[issue.severity] || '⚪';\n    const typ = typeEmoji[issue.type] || '📌';\n    body += '#### ' + sev + ' ' + typ + ' ' + (issue.type||'').toUpperCase() + ' — `' + issue.file + ':' + issue.line + '`\\n';\n    body += '**Severity:** ' + issue.severity + '\\n\\n' + issue.description + '\\n\\n';\n    if (issue.suggested_fix) { body += '> 💡 **Suggestion:** ' + issue.suggested_fix + '\\n\\n'; }\n    body += '---\\n\\n';\n  });\n} else {\n  body += '✅ No issues detected.\\n';\n}\nbody += '_Review latency: ' + (review.latency_ms || 0) + 'ms_';\nreturn [{ json: { comment_body: body, issues: review.issues || [], pr, review } }];"
       }
     },
     {
@@ -171,24 +158,6 @@
       }
     },
     {
-      "id": "12",
-      "name": "Send Slack Alert",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [2500, 300],
-      "parameters": {
-        "method": "POST",
-        "url": "https://slack.com/api/chat.postMessage",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ channel: '#code-reviews', text: '🚨 Critical issue in PR #' + $json.pr.pr_number + ' — ' + $json.pr.repo + '\\n' + $json.pr.pr_url }) }}",
-        "options": {}
-      },
-      "credentials": { "httpHeaderAuth": { "id": "slack-cred", "name": "Slack Token" } }
-    },
-    {
       "id": "13",
       "name": "Post Passed Comment",
       "type": "n8n-nodes-base.httpRequest",
@@ -217,7 +186,7 @@
     "Call Review API": { "main": [[{ "node": "Has Issues?", "type": "main", "index": 0 }]] },
     "Has Issues?": { "main": [[{ "node": "Format PR Comment", "type": "main", "index": 0 }], [{ "node": "Post Passed Comment", "type": "main", "index": 0 }]] },
     "Format PR Comment": { "main": [[{ "node": "Post GitHub Comment", "type": "main", "index": 0 }, { "node": "Is High Severity?", "type": "main", "index": 0 }]] },
-    "Is High Severity?": { "main": [[{ "node": "Send Slack Alert", "type": "main", "index": 0 }], []] }
+    "Is High Severity?": { "main": [[], []] }
   },
   "settings": { "executionOrder": "v1" },
   "staticData": null,
